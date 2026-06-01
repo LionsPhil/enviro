@@ -132,7 +132,10 @@ print("")
 print("    -  --  ---- -----=--==--===  hey enviro, let's go!  ===--==--=----- ----  --  -     ")
 print("")
 
+disconnect_wifi = None
+
 def reconnect_wifi(ssid, password, country, hostname=None):
+  global disconnect_wifi
   import time
   import network
   import math
@@ -195,15 +198,27 @@ def reconnect_wifi(ssid, password, country, hostname=None):
   mac = ubinascii.hexlify(wlan.config('mac'),':').decode()
   logging.info("> MAC: " + mac)
 
+  # Set up disconnect handler
+  def disconnect(deactivate=True):
+    status = dump_status()
+    if status != CYW43_LINK_DOWN:
+      wlan.disconnect()
+      try:
+        wait_status(CYW43_LINK_DOWN)
+      except Exception as x:
+        raise Exception(f"Failed to disconnect: {x}")
+      logging.info("  - disconnected successfully")
+      if deactivate:
+        wlan.active(False)
+        logging.info("  - wifi deactivated")
+  disconnect_wifi = disconnect
+
   # Disconnect when necessary
   status = dump_status()
   if status >= CYW43_LINK_JOIN and status < CYW43_LINK_UP:
-    logging.info("> Disconnecting...")
-    wlan.disconnect()
-    try:
-      wait_status(CYW43_LINK_DOWN)
-    except Exception as x:
-      raise Exception(f"Failed to disconnect: {x}")
+    logging.info("> Already connected; disconnect for retry...")
+    disconnect(deactivate=False)
+
   logging.info("> Ready for connection!")
 
   # Connect to our AP
@@ -240,7 +255,7 @@ def connect_to_wifi():
 def halt(message):
   logging.error(message)
   warn_led(WARN_LED_BLINK)
-  sleep()
+  sleep(5)
 
 # log the exception, blink the warning led, and go back to sleep
 def exception(exc):
@@ -249,7 +264,7 @@ def exception(exc):
   sys.print_exception(exc, buf)
   logging.exception("! " + buf.getvalue())
   warn_led(WARN_LED_BLINK)
-  sleep()
+  sleep(5)
 
 # returns True if we've used up 90% of the internal filesystem
 def low_disk_space():
@@ -290,13 +305,49 @@ def is_clock_set():
 
   return False
 
+# phew's ntp client has no error reporting at all to log or inform retries.
+# (It would be better to make it raise, but then all callers need updating.)
+# As a side-effect, it sets the Pico's RTC on success by default; this version
+# always does.
+def native_ntp(ntp_host):
+  import machine, time, usocket, struct
+
+  timestamp = None
+  query = bytearray(48)
+  query[0] = 0x1b
+  logging.debug(f"  - ntp resolve {ntp_host}...")
+  address = usocket.getaddrinfo(ntp_host, 123)[0][-1]
+  socket = usocket.socket(usocket.AF_INET, usocket.SOCK_DGRAM)
+  socket.settimeout(10)
+  logging.debug(f"  - ntp send to {address}...")
+  socket.sendto(query, address)
+  logging.debug(f"  - ntp receive...")
+  data = socket.recv(48)
+  logging.debug(f"  - ntp received!")
+  socket.close()
+  local_epoch = 2208988800 # selected by Chris - blame him. :-D
+  timestamp = struct.unpack("!I", data[40:44])[0] - local_epoch
+  timestamp = time.gmtime(timestamp)
+
+  machine.RTC().datetime((
+    timestamp[0], timestamp[1], timestamp[2], timestamp[6],
+    timestamp[3], timestamp[4], timestamp[5], 0))
+
+  return timestamp
+
 # connect to wifi and attempt to fetch the current time from an ntp server
 def sync_clock_from_ntp():
-  from phew import ntp
   if not connect_to_wifi():
     return False
-  #TODO Fetch only does one attempt. Can also optionally set Pico RTC (do we want this?)
-  timestamp = ntp.fetch()
+  attempt = 0
+  timestamp = None
+  while timestamp is None and attempt < 5:
+    attempt += 1
+    logging.info(f"  - attempt {attempt} to fetch time...")
+    try:
+      timestamp = native_ntp("pool.ntp.org")
+    except Exception as e:
+      logging.error(f"  - ntp failure: {e}")
   if not timestamp:
     logging.error("  - failed to fetch time from ntp server")
     return False
@@ -535,12 +586,8 @@ def upload_readings():
         logging.error(f"  ! failed to upload log: {e}")
 
     # Disconnect wifi
-    import network
     logging.info("> Disconnecting wireless after upload")
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    wlan.disconnect()
-    wlan.active(False)
+    disconnect_wifi()
 
   return True
 
@@ -598,6 +645,10 @@ def sleep(time_override=None):
     minutes = time_override
   if minutes > 255:
     minutes = 255
+  if minutes < 1:
+    # Less than one is either going to underflow or be zero (timer disable).
+    logging.error(f"!  probable bug, tried to sleep for {minutes} minutes")
+    minutes = 1
 
   # Log about it.
   logging.info(f"> going to sleep for {minutes} minute(s)")
@@ -611,6 +662,12 @@ def sleep(time_override=None):
   rtc.clear_timer_flag()
   rtc.set_timer(minutes, rtc.TIMER_TICK_1_OVER_60HZ)
   rtc.enable_timer_interrupt(True)
+
+  # Disconnect the wifi, if it was, else some routers get upset at us vanishing
+  # then trying to connect anew a while later.
+  if disconnect_wifi is not None:
+    logging.info("  - attempting to disconnect wifi first")
+    disconnect_wifi()
 
   # disable the vsys hold, causing us to turn off
   logging.info("  - shutting down")
