@@ -22,7 +22,7 @@ def timestamp(dt):
   hour = int(dt[11:13])
   minute = int(dt[14:16])
   second = int(dt[17:19])
-  return time.mktime((year, month, day, hour, minute, second, 0, 0))
+  return time.mktime((year, month, day, hour, minute, second, 0, 1))
 
 def uid():
   return "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}".format(*machine.unique_id())

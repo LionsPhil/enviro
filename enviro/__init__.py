@@ -301,15 +301,14 @@ def sync_clock_from_ntp():
     logging.error("  - failed to fetch time from ntp server")
     return False
 
-  # fixes an issue where sometimes the RTC would not pick up the new time
-  i2c.writeto_mem(0x51, 0x00, b'\x10') # reset the rtc so we can change the time
   rtc.datetime(timestamp) # set the time on the rtc chip
-  i2c.writeto_mem(0x51, 0x00, b'\x00') # ensure rtc is running
-  rtc.enable_timer_interrupt(False)
 
   # read back the RTC time to confirm it was updated successfully
   dt = rtc.datetime()
-  if dt != timestamp[0:7]:
+  # rtc.datetime() misses the required day-of-year field; it won't match, but
+  # mktime() won't care since it doesn't contribute to epoch time.
+  diff = abs(time.mktime(timestamp) - time.mktime(dt + (0,)))
+  if diff > 1:
     logging.error("  - failed to update rtc")
     if helpers.file_exists("sync_time.txt"):
       os.remove("sync_time.txt")
