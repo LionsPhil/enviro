@@ -207,12 +207,12 @@ def reconnect_wifi(ssid, password, country, hostname=None):
   logging.info("> Ready for connection!")
 
   # Connect to our AP
-  logging.info(f"> Connecting to SSID {ssid} (password: {password})...")
+  logging.info(f"> Connecting to SSID {ssid}...")
   wlan.connect(ssid, password)
   try:
     wait_status(CYW43_LINK_UP)
   except Exception as x:
-    raise Exception(f"Failed to connect to SSID {ssid} (password: {password}): {x}")
+    raise Exception(f"Failed to connect to SSID {ssid}: {x}")
   logging.info("> Connected successfully!")
 
   ip, subnet, gateway, dns = wlan.ifconfig()
