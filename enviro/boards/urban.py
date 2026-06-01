@@ -40,12 +40,14 @@ def get_sensor_readings(seconds_since_last, is_usb_power):
   bme280.read()
   time.sleep(0.1)
   bme280_data = bme280.read()
-  
+
   logging.debug("  - starting sensor")
   boost_enable_pin.value(True)
   sensor_enable_pin.value(True)
-  logging.debug("  - wait 5 seconds for airflow")
-  time.sleep(5) # allow airflow to start
+  # 30 seconds required; see datasheet:
+  # https://www.mouser.co.uk/datasheet/2/737/4505_PMSA003I_series_data_manual_English_V2_6-2490334.pdf
+  logging.debug("  - wait 30 seconds for airflow")
+  time.sleep(30) # allow airflow to start
 
   # setup the i2c bus for the particulate sensor
   logging.debug("  - taking pms5003i reading")
@@ -63,7 +65,7 @@ def get_sensor_readings(seconds_since_last, is_usb_power):
     value = (noise_adc.read_u16() * 3.3) / 65535
     min_value = min(min_value, value)
     max_value = max(max_value, value)
-  
+
   noise_vpp = max_value - min_value
 
   from ucollections import OrderedDict
@@ -72,8 +74,8 @@ def get_sensor_readings(seconds_since_last, is_usb_power):
     "humidity": round(bme280_data[2], 2),
     "pressure": round(bme280_data[1] / 100.0, 2),
     "noise": round(noise_vpp, 3),
-    "pm1": particulates(particulate_data, PM1_UGM3), 
-    "pm2_5": particulates(particulate_data, PM2_5_UGM3), 
+    "pm1": particulates(particulate_data, PM1_UGM3),
+    "pm2_5": particulates(particulate_data, PM2_5_UGM3),
     "pm10": particulates(particulate_data, PM10_UGM3)
   })
 
