@@ -5,11 +5,14 @@ from umachine import RTC
 from pcf85063a import PCF85063A
 from phew import logging
 
-import custom_config
 from pimoroni_i2c import PimoroniI2C
 
 from enviro.helpers import mkdir_safe, copy_file, file_size
 
+try:
+  import custom_config
+except ImportError:
+  custom_config = {}
 
 def is_custom_config_active(key: str) -> bool:
   return hasattr(custom_config, key) and getattr(custom_config, key, False)
