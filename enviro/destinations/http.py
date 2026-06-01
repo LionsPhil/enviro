@@ -18,7 +18,7 @@ def upload_reading(reading):
     result = urequests.post(url, auth=auth, json=reading)
     result.close()
 
-    if result.status_code in [200, 201, 202]:
+    if result.status_code >= 200 and result.status_code < 300:
       return UPLOAD_SUCCESS
 
     logging.debug(f"  - upload issue ({result.status_code} {result.reason})")

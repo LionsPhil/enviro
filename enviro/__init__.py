@@ -96,7 +96,7 @@ if needs_provisioning:
 # all the other imports, so many shiny modules
 import machine, sys, os, ujson
 from enviro.custom_helpers import initialize_rtc, check_cached_file_is_not_empty, \
-  move_incompatible_file_out_of_uploads_dir
+  move_incompatible_file_out_of_uploads_dir, is_custom_config_active
 import phew
 from pcf85063a import PCF85063A
 import enviro.config_defaults as config_defaults
@@ -517,6 +517,24 @@ def upload_readings():
     return False
 
   finally:
+    url = is_custom_config_active('log_upload_url')
+    if url:
+      # Attempt log upload via HTTP. Shares auth with HTTP endpoint.
+      import urequests
+      logging.info(f"> uploading logfile to url: {url}")
+      auth = None
+      if config.custom_http_username:
+        auth = (config.custom_http_username, config.custom_http_password)
+      try:
+        with open("log.txt", "r") as upload_file:
+          result = urequests.post(url, auth=auth, data=upload_file.read())
+          result.close()
+
+          if result.status_code < 200 or result.status_code >= 300:
+            logging.debug(f"  - upload issue ({result.status_code} {result.reason})")
+      except Exception as e:
+        logging.error(f"  ! failed to upload log: {e}")
+
     # Disconnect wifi
     import network
     logging.info("> Disconnecting wireless after upload")
