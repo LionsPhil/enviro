@@ -15,9 +15,9 @@ if 56 in i2c_devices: # 56 = colour / light sensor and only present on Indoor
   model = "indoor"
 elif 35 in i2c_devices: # 35 = ltr-599 on grow & weather
   pump3_pin = Pin(12, Pin.IN, Pin.PULL_UP)
-  model = "grow" if pump3_pin.value() == False else "weather"    
+  model = "grow" if pump3_pin.value() == False else "weather"
   pump3_pin.init(pull=None)
-else:    
+else:
   model = "urban" # otherwise it's urban..
 
 # return the module that implements this board type
@@ -31,7 +31,7 @@ def get_board():
   if model == "urban":
     import enviro.boards.urban as board
   return board
-  
+
 # set up the activity led
 # ===========================================================================
 from machine import PWM, Timer
@@ -46,7 +46,7 @@ def activity_led(brightness):
   # gamma correct the brightness (gamma 2.8)
   value = int(pow(brightness / 100.0, 2.8) * 65535.0 + 0.5)
   activity_led_pwm.duty_u16(value)
-  
+
 activity_led_timer = Timer(-1)
 activity_led_pulse_speed_hz = 1
 def activity_led_callback(t):
@@ -108,6 +108,7 @@ config_defaults.add_missing_config_settings()
 vbus_present = Pin("WL_GPIO2", Pin.IN).value()
 
 # set up the button, external trigger, and rtc alarm pins
+# (I believe this is a misnomer; the datasheet only lists an interrupt pin.)
 rtc_alarm_pin = Pin(RTC_ALARM_PIN, Pin.IN, Pin.PULL_DOWN)
 # BUG This should only be set up for Enviro Camera
 # external_trigger_pin = Pin(EXTERNAL_INTERRUPT_PIN, Pin.IN, Pin.PULL_DOWN)
@@ -137,7 +138,7 @@ def reconnect_wifi(ssid, password, country, hostname=None):
   import math
   import rp2
   import ubinascii
-  
+
   start_ms = time.ticks_ms()
 
   # Set country
@@ -193,7 +194,7 @@ def reconnect_wifi(ssid, password, country, hostname=None):
   # Print MAC
   mac = ubinascii.hexlify(wlan.config('mac'),':').decode()
   logging.info("> MAC: " + mac)
-  
+
   # Disconnect when necessary
   status = dump_status()
   if status >= CYW43_LINK_JOIN and status < CYW43_LINK_UP:
@@ -216,7 +217,7 @@ def reconnect_wifi(ssid, password, country, hostname=None):
 
   ip, subnet, gateway, dns = wlan.ifconfig()
   logging.info(f"> IP: {ip}, Subnet: {subnet}, Gateway: {gateway}, DNS: {dns}")
-  
+
   elapsed_ms = time.ticks_ms() - start_ms
   logging.info(f"> Elapsed: {elapsed_ms}ms")
   return elapsed_ms
@@ -253,10 +254,10 @@ def exception(exc):
 # returns True if we've used up 90% of the internal filesystem
 def low_disk_space():
   if not phew.remote_mount: # os.statvfs doesn't exist on remote mounts
-    return (os.statvfs(".")[3] / os.statvfs(".")[2]) < 0.1   
+    return (os.statvfs(".")[3] / os.statvfs(".")[2]) < 0.1
   return False
 
-# returns True if the rtc clock has been set recently 
+# returns True if the rtc clock has been set recently
 def is_clock_set():
   # is the year on or before 2020?
   if rtc.datetime()[0] <= 2020:
@@ -298,7 +299,7 @@ def sync_clock_from_ntp():
   timestamp = ntp.fetch()
   if not timestamp:
     logging.error("  - failed to fetch time from ntp server")
-    return False  
+    return False
 
   # fixes an issue where sometimes the RTC would not pick up the new time
   i2c.writeto_mem(0x51, 0x00, b'\x10') # reset the rtc so we can change the time
@@ -315,10 +316,10 @@ def sync_clock_from_ntp():
     return False
 
   logging.info("  - rtc synched")
-  
+
   # write out the sync time log
   with open("sync_time.txt", "w") as syncfile:
-    syncfile.write("{0:04d}-{1:02d}-{2:02d}T{3:02d}:{4:02d}:{5:02d}Z".format(*timestamp))  
+    syncfile.write("{0:04d}-{1:02d}-{2:02d}T{3:02d}:{4:02d}:{5:02d}Z".format(*timestamp))
 
   return True
 
@@ -330,7 +331,7 @@ def warn_led(state):
     rtc.set_clock_output(PCF85063A.CLOCK_OUT_1024HZ)
   elif state == WARN_LED_BLINK:
     rtc.set_clock_output(PCF85063A.CLOCK_OUT_1HZ)
-    
+
 # the pcf85063a defaults to 32KHz clock output so need to explicitly turn off
 warn_led(WARN_LED_OFF)
 
@@ -338,7 +339,7 @@ warn_led(WARN_LED_OFF)
 # returns the reason the board woke up from deep sleep
 def get_wake_reason():
   import wakeup
-  
+
   wake_reason = None
   if wakeup.get_gpio_state() & (1 << BUTTON_PIN):
     wake_reason = WAKE_REASON_BUTTON_PRESS
@@ -390,7 +391,7 @@ def get_sensor_readings():
 
   # write out the last time log
   with open("last_time.txt", "w") as timefile:
-    timefile.write(now_str)  
+    timefile.write(now_str)
 
   return readings
 
@@ -484,7 +485,7 @@ def upload_readings():
             # remove the sync time file to trigger a resync on next boot
             if helpers.file_exists("sync_time.txt"):
               os.remove("sync_time.txt")
-             
+
             # write out that we want to attempt a reupload
             with open("reattempt_upload.txt", "w") as attemptfile:
               attemptfile.write("")
@@ -543,7 +544,7 @@ def startup():
     continue_startup = board.startup(reason)
     # put the board back to sleep if the startup doesn't need to continue
     # and the RTC has not triggered since we were awoken
-    if not continue_startup and not rtc.read_alarm_flag():
+    if not continue_startup and not rtc.read_timer_flag():
       logging.debug("  - wake reason: trigger")
       sleep()
 
@@ -574,43 +575,25 @@ def startup():
       sleep()
 
 def sleep(time_override=None):
+  # For how long?
+  minutes = config.reading_frequency
   if time_override is not None:
-    logging.info(f"> going to sleep for {time_override} minute(s)")
-  else:
-    logging.info("> going to sleep")
+    minutes = time_override
+  if minutes > 255:
+    minutes = 255
 
-  # make sure the rtc flags are cleared before going back to sleep
-  logging.debug("  - clearing and disabling previous alarm")
-  rtc.clear_timer_flag() # TODO this was removed from 0.0.8
-  rtc.clear_alarm_flag()
-
-  # set alarm to wake us up for next reading
-  dt = rtc.datetime()
-  hour, minute, second = dt[3:6]
-
-  # calculate how many minutes into the day we are
+  # Log about it.
+  logging.info(f"> going to sleep for {minutes} minute(s)")
   if time_override is not None:
-    minute += time_override
-  else:
-    # if the time is very close to the end of the minute, advance to the next minute
-    # this aims to fix the edge case where the board goes to sleep right as the RTC triggers, thus never waking up
-    if second > 55:
-      minute += 1
-    minute = math.floor(minute / config.reading_frequency) * config.reading_frequency
-    minute += config.reading_frequency
+    logging.info(f"  - reading frequency was overridden")
+  if minutes == 255:
+    logging.warn(f"  - limited to 255-minute maximum timer")
 
-  while minute >= 60:      
-    minute -= 60
-    hour += 1
-  if hour >= 24:
-    hour -= 24
-  ampm = "am" if hour < 12 else "pm"
-
-  logging.info(f"  - setting alarm to wake at {hour:02}:{minute:02}{ampm}")
-
-  # sleep until next scheduled reading
-  rtc.set_alarm(0, minute, hour)
-  rtc.enable_alarm_interrupt(True)
+  # Set the timer.
+  rtc.unset_timer() # Per datasheet, disable timer while setting new duration.
+  rtc.clear_timer_flag()
+  rtc.set_timer(minutes, rtc.TIMER_TICK_1_OVER_60HZ)
+  rtc.enable_timer_interrupt(True)
 
   # disable the vsys hold, causing us to turn off
   logging.info("  - shutting down")
@@ -628,7 +611,7 @@ def sleep(time_override=None):
   # we'll wait here until the rtc timer triggers and then reset the board
   logging.debug("  - on usb power (so can't shutdown). Halt and wait for alarm or user reset instead")
   board = get_board()
-  while not rtc.read_alarm_flag():
+  while not rtc.read_timer_flag():
     if hasattr(board, "check_trigger"):
       board.check_trigger()
 
