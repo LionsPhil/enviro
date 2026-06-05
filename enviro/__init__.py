@@ -233,6 +233,11 @@ def reconnect_wifi(ssid, password, country, hostname=None):
   ip, subnet, gateway, dns = wlan.ifconfig()
   logging.info(f"> IP: {ip}, Subnet: {subnet}, Gateway: {gateway}, DNS: {dns}")
 
+  if ip == "0.0.0.0":
+    logging.error("  - ...but DHCP lease is bad!")
+    disconnect(deactivate=True)
+    raise Exception(f"Failed to get DHCP lease from {ssid}")
+
   elapsed_ms = time.ticks_ms() - start_ms
   logging.info(f"> Elapsed: {elapsed_ms}ms")
   return elapsed_ms
