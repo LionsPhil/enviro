@@ -672,7 +672,11 @@ def sleep(time_override=None):
   # then trying to connect anew a while later.
   if disconnect_wifi is not None:
     logging.info("  - attempting to disconnect wifi first")
-    disconnect_wifi()
+    try:
+      disconnect_wifi()
+    except Exception as e:
+      # We *must not* let any wifi nonsense stop us sleeping.
+      logging.error(f"  - wifi disconnect error: {e}")
 
   # disable the vsys hold, causing us to turn off
   logging.info("  - shutting down")
