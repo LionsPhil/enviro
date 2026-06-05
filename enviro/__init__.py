@@ -144,71 +144,89 @@ def reconnect_wifi(ssid, password, country, hostname=None):
 
   start_ms = time.ticks_ms()
 
-  # Set country
+  # Set country (rp2 does also set the network.country()).
   rp2.country(country)
 
-  # Set hostname
+  # Set hostname.
   if hostname is None:
       hostname = f"EnviroW-{helpers.uid()[-4:]}"
   network.hostname(hostname)
+  logging.info("> Hostname: " + hostname)
 
-  # Reference: https://datasheets.raspberrypi.com/picow/connecting-to-the-internet-with-pico-w.pdf
-  CYW43_LINK_DOWN = 0
-  CYW43_LINK_JOIN = 1
-  CYW43_LINK_NOIP = 2
-  CYW43_LINK_UP = 3
-  CYW43_LINK_FAIL = -1
-  CYW43_LINK_NONET = -2
-  CYW43_LINK_BADAUTH = -3
-
-  status_names = {
-    CYW43_LINK_DOWN: "Link is down",
-    CYW43_LINK_JOIN: "Connected to wifi",
-    CYW43_LINK_NOIP: "Connected to wifi, but no IP address",
-    CYW43_LINK_UP: "Connect to wifi with an IP address",
-    CYW43_LINK_FAIL: "Connection failed",
-    CYW43_LINK_NONET: "No matching SSID found (could be out of range, or down)",
-    CYW43_LINK_BADAUTH: "Authenticatation failure",
-  }
-
+  # Wake the adapter.
   wlan = network.WLAN(network.STA_IF)
-
-  def dump_status():
-    status = wlan.status()
-    logging.info(f"> active: {1 if wlan.active() else 0}, status: {status} ({status_names[status]})")
-    return status
-
-  # Return True on expected status, exception on error status (negative) and False on timeout
-  def wait_status(expected_status, *, timeout=10, tick_sleep=0.5):
-    for i in range(math.ceil(timeout / tick_sleep)):
-      time.sleep(tick_sleep)
-      status = dump_status()
-      if status == expected_status:
-        return True
-      if status < 0:
-        raise Exception(status_names[status])
-    return False
-
   wlan.active(True)
+
   # Use performance mode on USB, powersave on battery.
   # These constants are new in Micropython v1.22, which the official enviro
   # 0.2.0 image updated to.
+  # https://docs.micropython.org/en/v1.22.0/library/network.WLAN.html
   if vbus_present:
+    # This should be a no-op, since it's the default.
+    logging.info("  - on USB power, setting performance power profile")
     wlan.config(pm=wlan.PM_PERFORMANCE)
   else:
+    logging.info("  - setting power-saving profile")
     wlan.config(pm=wlan.PM_POWERSAVE)
 
-  # Print MAC
+  # Print MAC address.
   mac = ubinascii.hexlify(wlan.config('mac'),':').decode()
   logging.info("> MAC: " + mac)
 
-  # Set up disconnect handler
+  status_names = {
+    network.STAT_IDLE: "No connection and no activity",
+    network.STAT_CONNECTING: "Connecting in progress",
+    # This is CYW43_LINK_NOIP, and seems to leak through.
+    2: "Waiting for IP address",
+    network.STAT_WRONG_PASSWORD: "Failed due to incorrect password",
+    network.STAT_NO_AP_FOUND: "Failed because no access point replied",
+    network.STAT_CONNECT_FAIL: "Failed due to other problems",
+    network.STAT_GOT_IP: "Connection successful",
+  }
+
+  fail_statuses = [
+    network.STAT_WRONG_PASSWORD,
+    network.STAT_NO_AP_FOUND,
+    network.STAT_CONNECT_FAIL
+  ]
+
+  def dump_status():
+    # So, the CYW43 does not seem to follow the Micropython docs for this.
+    # While we try, active(bool) doesn't change its state, and active() seems
+    # to return if it's *attempting to be connected*.
+    # So read status regardless and log if it thinks it's active, rather than
+    # assume inactive means those are invalid and it must be idle/disconnected.
+    status = wlan.status()
+    connected = wlan.isconnected()
+    active = wlan.active()
+    logging.info(
+      f"  - status: {status} ({status_names.get(status, "Unknown")})" +
+      (" [connected]" if connected else "") +
+      ("" if active else " [INACTIVE]"))
+    return (status, connected)
+
+  # Wait for connection/disconnection, throw on timeout or failure.
+  def wait_connection(want_connected, timeout):
+    for i in range(timeout):
+      time.sleep(1.0)
+      (status, connected) = dump_status()
+      if want_connected and connected:
+        return
+      # Wanting to disconnect means going all the way back down to idle, not
+      # just "not connected".
+      if not want_connected and status == network.STAT_IDLE:
+        return
+      if status in fail_statuses:
+        raise Exception(status_names[status])
+    raise Exception("timeout")
+
+  # Set up disconnect handler.
   def disconnect(deactivate=True):
-    status = dump_status()
-    if status != CYW43_LINK_DOWN:
+    (status, _) = dump_status()
+    if status != network.STAT_IDLE:
       wlan.disconnect()
       try:
-        wait_status(CYW43_LINK_DOWN)
+        wait_connection(False, 5)
       except Exception as x:
         raise Exception(f"Failed to disconnect: {x}")
       logging.info("  - disconnected successfully")
@@ -217,30 +235,36 @@ def reconnect_wifi(ssid, password, country, hostname=None):
         logging.info("  - wifi deactivated")
   disconnect_wifi = disconnect
 
-  # Disconnect when necessary
-  status = dump_status()
-  if status >= CYW43_LINK_JOIN and status < CYW43_LINK_UP:
-    logging.info("> Already connected; disconnect for retry...")
+  # Disconnect if already partially connected for a clean retry.
+  (status, connected) = dump_status()
+  if status != network.STAT_IDLE and not connected:
+    logging.info("> Partially connected; disconnect for retry...")
     disconnect(deactivate=False)
 
   logging.info("> Ready for connection!")
 
-  # Connect to our AP
+  # Connect to our AP.
   logging.info(f"> Connecting to SSID {ssid}...")
   wlan.connect(ssid, password)
   try:
-    wait_status(CYW43_LINK_UP)
-  except Exception as x:
-    raise Exception(f"Failed to connect to SSID {ssid}: {x}")
+    # TODO It'd be nice if this timeout were configurable, eh.
+    wait_connection(True, 30)
+  except Exception as e:
+    raise Exception(f"Failed to connect to SSID {ssid}: {e}")
   logging.info("> Connected successfully!")
 
+  # Show info.
   ip, subnet, gateway, dns = wlan.ifconfig()
   logging.info(f"> IP: {ip}, Subnet: {subnet}, Gateway: {gateway}, DNS: {dns}")
+  rssi = wlan.status('rssi')
+  logging.info(f"> RSSI (signal strength): {rssi}")
 
+  # Check for bad IP. This *shouldn't* happen since, unlike a raw status check,
+  # wlan.isconnected() returns False for GOT_IP if the IP is all-zeroes.
   if ip == "0.0.0.0":
-    logging.error("  - ...but DHCP lease is bad!")
+    logging.error("  - ...but IP is bad!")
     disconnect(deactivate=True)
-    raise Exception(f"Failed to get DHCP lease from {ssid}")
+    raise Exception(f"Failed to get valid IP from {ssid} (DHCP problem?)")
 
   elapsed_ms = time.ticks_ms() - start_ms
   logging.info(f"> Elapsed: {elapsed_ms}ms")
@@ -661,8 +685,6 @@ def sleep(time_override=None):
 
   # Log about it.
   logging.info(f"> going to sleep for {minutes} minute(s)")
-  if time_override is not None:
-    logging.info(f"  - reading frequency was overridden")
   if minutes == 255:
     logging.warn(f"  - limited to 255-minute maximum timer")
 
