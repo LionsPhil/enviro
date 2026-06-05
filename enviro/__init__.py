@@ -190,9 +190,13 @@ def reconnect_wifi(ssid, password, country, hostname=None):
     return False
 
   wlan.active(True)
-  # Disable power saving mode if on USB power
+  # Use performance mode on USB, powersave on battery.
+  # These constants are new in Micropython v1.22, which the official enviro
+  # 0.2.0 image updated to.
   if vbus_present:
-    wlan.config(pm=0xa11140)
+    wlan.config(pm=wlan.PM_PERFORMANCE)
+  else:
+    wlan.config(pm=wlan.PM_POWERSAVE)
 
   # Print MAC
   mac = ubinascii.hexlify(wlan.config('mac'),':').decode()
