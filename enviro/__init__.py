@@ -207,7 +207,7 @@ def reconnect_wifi(ssid, password, country, hostname=None):
 
   # Wait for connection/disconnection, throw on timeout or failure.
   def wait_connection(want_connected, timeout):
-    for i in range(timeout):
+    for _ in range(timeout):
       time.sleep(1.0)
       (status, connected) = dump_status()
       if want_connected and connected:
@@ -240,6 +240,22 @@ def reconnect_wifi(ssid, password, country, hostname=None):
   if status != network.STAT_IDLE and not connected:
     logging.info("> Partially connected; disconnect for retry...")
     disconnect(deactivate=False)
+
+  # Big stupid hammer for big stupid wireless problems.
+  # This consumes extra time and battery but also seems to act as a "wait for
+  # the CYW43 to find its pants" before asking it to connect.
+  def force_wireless_scan():
+    logging.info(f"> Forcing wireless scan...")
+    for _ in range(3):
+      scan = wlan.scan()
+      if scan:
+        logging.info(f"  - found {len(scan)} access points, promising!")
+        return
+      else:
+        logging.warn("  - not seeing any access points yet...")
+    logging.warn("!  Gave up scanning, found nothing, connection unlikely!")
+  if is_custom_config_active('force_wireless_scan'):
+    force_wireless_scan()
 
   logging.info("> Ready for connection!")
 
