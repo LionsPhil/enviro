@@ -259,7 +259,11 @@ def reconnect_wifi(ssid, password, country, hostname=None):
         logging.warn("  - not seeing any access points yet...")
     logging.warn("!  Gave up scanning, found nothing, connection unlikely!")
   if is_custom_config_active('force_wireless_scan'):
-    force_wireless_scan()
+    try:
+      force_wireless_scan()
+    except Exception as e:
+      # It seems we can get EPERM OSErrors in power-saving mode.
+      logging.error(f"!  scan failed: {e}")
 
   logging.info("> Ready for connection!")
 
