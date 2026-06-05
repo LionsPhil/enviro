@@ -235,9 +235,13 @@ def reconnect_wifi(ssid, password, country, hostname=None):
         logging.info("  - wifi deactivated")
   disconnect_wifi = disconnect
 
+  # Stop meddling if we're already connected.
   # Disconnect if already partially connected for a clean retry.
   (status, connected) = dump_status()
-  if status != network.STAT_IDLE and not connected:
+  if connected:
+    logging.info("> Already connected!")
+    return time.ticks_ms() - start_ms
+  if status != network.STAT_IDLE:
     logging.info("> Partially connected; disconnect for retry...")
     disconnect(deactivate=False)
 
