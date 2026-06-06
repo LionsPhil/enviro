@@ -167,7 +167,7 @@ class clocks:
     def write_external(self, t: time.struct_time) -> None:
         """Write the PCF85063A RTC from a struct_time."""
         self.rtc_ext.datetime((t.tm_year, t.tm_mon, t.tm_mday, t.tm_wday,
-                                 t.tm_hour, t.tm_min, t.tm_sec, 0))
+                               t.tm_hour, t.tm_min, t.tm_sec, 0))
 
 
     # phew's ntp client has no error reporting at all to log or inform retries.

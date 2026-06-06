@@ -103,6 +103,7 @@ import enviro.config_defaults as config_defaults
 import enviro.helpers as helpers
 import enviro.watchdog as watchdog
 import enviro.clocks
+import enviro.networing
 
 config_defaults.add_missing_config_settings()
 
@@ -124,6 +125,14 @@ watchdog.dirty()
 # Set up the clocks.
 clocks = enviro.clocks.clocks(i2c)
 
+# Set up (do not connect) wireless.
+# TODO hostname was never set from config, and nickname has a default that is
+# worse than the auto-derived one.
+networking = enviro.networking.networking(
+  ssid=config.wifi_ssid, password=config.wifi_password, usb_power=vbus_present,
+  country=config.wifi_country,
+  force_scan=is_custom_config_active('force_wireless_scan'))
+
 # jazz up that console! toot toot!
 print(r"       ___            ___            ___          ___          ___            ___       ")
 print(r"      /  /\          /__/\          /__/\        /  /\        /  /\          /  /\      ")
@@ -139,182 +148,6 @@ print(r"      \__\/          \__\/          `~~~~~`      \__\/        \__\/     
 print(r"")
 print(r"    -  --  ---- -----=--==--===  hey enviro, let's go!  ===--==--=----- ----  --  -     ")
 print(r"")
-
-disconnect_wifi = None
-
-def reconnect_wifi(ssid, password, country, hostname=None):
-  global disconnect_wifi
-  import time
-  import network
-  import math
-  import rp2
-  import ubinascii
-
-  start_ms = time.ticks_ms()
-
-  # Set country (rp2 does also set the network.country()).
-  rp2.country(country)
-
-  # Set hostname.
-  if hostname is None:
-      hostname = f"EnviroW-{helpers.uid()[-4:]}"
-  network.hostname(hostname)
-  logging.info("> Hostname: " + hostname)
-
-  # Wake the adapter.
-  wlan = network.WLAN(network.STA_IF)
-  wlan.active(True)
-
-  # Use performance mode on USB, powersave on battery.
-  # These constants are new in Micropython v1.22, which the official enviro
-  # 0.2.0 image updated to.
-  # https://docs.micropython.org/en/v1.22.0/library/network.WLAN.html
-  if vbus_present:
-    # This should be a no-op, since it's the default.
-    logging.info("  - on USB power, setting performance power profile")
-    wlan.config(pm=wlan.PM_PERFORMANCE)
-  else:
-    logging.info("  - setting power-saving profile")
-    wlan.config(pm=wlan.PM_POWERSAVE)
-
-  # Print MAC address.
-  mac = ubinascii.hexlify(wlan.config('mac'),':').decode()
-  logging.info("> MAC: " + mac)
-
-  status_names = {
-    network.STAT_IDLE: "No connection and no activity",
-    network.STAT_CONNECTING: "Connecting in progress",
-    # This is CYW43_LINK_NOIP, and seems to leak through.
-    2: "Waiting for IP address",
-    network.STAT_WRONG_PASSWORD: "Failed due to incorrect password",
-    network.STAT_NO_AP_FOUND: "Failed because no access point replied",
-    network.STAT_CONNECT_FAIL: "Failed due to other problems",
-    network.STAT_GOT_IP: "Connection successful",
-  }
-
-  fail_statuses = [
-    network.STAT_WRONG_PASSWORD,
-    network.STAT_NO_AP_FOUND,
-    network.STAT_CONNECT_FAIL
-  ]
-
-  def dump_status():
-    # So, the CYW43 does not seem to follow the Micropython docs for this.
-    # While we try, active(bool) doesn't change its state, and active() seems
-    # to return if it's *attempting to be connected*.
-    # So read status regardless and log if it thinks it's active, rather than
-    # assume inactive means those are invalid and it must be idle/disconnected.
-    status = wlan.status()
-    connected = wlan.isconnected()
-    active = wlan.active()
-    logging.info(
-      f"  - status: {status} ({status_names.get(status, "Unknown")})" +
-      (" [connected]" if connected else "") +
-      ("" if active else " [INACTIVE]"))
-    return (status, connected)
-
-  # Wait for connection/disconnection, throw on timeout or failure.
-  def wait_connection(want_connected, timeout):
-    for _ in range(timeout):
-      time.sleep(1.0)
-      (status, connected) = dump_status()
-      if want_connected and connected:
-        return
-      # Wanting to disconnect means going all the way back down to idle, not
-      # just "not connected".
-      if not want_connected and status == network.STAT_IDLE:
-        return
-      if status in fail_statuses:
-        raise Exception(status_names[status])
-    raise Exception("timeout")
-
-  # Set up disconnect handler.
-  def disconnect(deactivate=True):
-    (status, _) = dump_status()
-    if status != network.STAT_IDLE:
-      wlan.disconnect()
-      try:
-        wait_connection(False, 5)
-      except Exception as x:
-        raise Exception(f"Failed to disconnect: {x}")
-      logging.info("  - disconnected successfully")
-      if deactivate:
-        wlan.active(False)
-        logging.info("  - wifi deactivated")
-  disconnect_wifi = disconnect
-
-  # Stop meddling if we're already connected.
-  # Disconnect if already partially connected for a clean retry.
-  (status, connected) = dump_status()
-  if connected:
-    logging.info("> Already connected!")
-    return time.ticks_ms() - start_ms
-  if status != network.STAT_IDLE:
-    logging.info("> Partially connected; disconnect for retry...")
-    disconnect(deactivate=False)
-
-  # Big stupid hammer for big stupid wireless problems.
-  # This consumes extra time and battery but also seems to act as a "wait for
-  # the CYW43 to find its pants" before asking it to connect.
-  def force_wireless_scan():
-    logging.info(f"> Forcing wireless scan...")
-    for _ in range(3):
-      scan = wlan.scan()
-      if scan:
-        logging.info(f"  - found {len(scan)} access points, promising!")
-        return
-      else:
-        logging.warn("  - not seeing any access points yet...")
-    logging.warn("!  Gave up scanning, found nothing, connection unlikely!")
-  if is_custom_config_active('force_wireless_scan'):
-    try:
-      force_wireless_scan()
-    except Exception as e:
-      # It seems we can get EPERM OSErrors in power-saving mode.
-      logging.error(f"!  scan failed: {e}")
-
-  logging.info("> Ready for connection!")
-
-  # Connect to our AP.
-  logging.info(f"> Connecting to SSID {ssid}...")
-  wlan.connect(ssid, password)
-  try:
-    # TODO It'd be nice if this timeout were configurable, eh.
-    wait_connection(True, 30)
-  except Exception as e:
-    raise Exception(f"Failed to connect to SSID {ssid}: {e}")
-  logging.info("> Connected successfully!")
-
-  # Show info.
-  ip, subnet, gateway, dns = wlan.ifconfig()
-  logging.info(f"> IP: {ip}, Subnet: {subnet}, Gateway: {gateway}, DNS: {dns}")
-  rssi = wlan.status('rssi')
-  logging.info(f"> RSSI (signal strength): {rssi}")
-
-  # Check for bad IP. This *shouldn't* happen since, unlike a raw status check,
-  # wlan.isconnected() returns False for GOT_IP if the IP is all-zeroes.
-  if ip == "0.0.0.0":
-    logging.error("  - ...but IP is bad!")
-    disconnect(deactivate=True)
-    raise Exception(f"Failed to get valid IP from {ssid} (DHCP problem?)")
-
-  elapsed_ms = time.ticks_ms() - start_ms
-  logging.info(f"> Elapsed: {elapsed_ms}ms")
-  return elapsed_ms
-
-def connect_to_wifi():
-  try:
-    logging.info(f"> connecting to wifi network '{config.wifi_ssid}'")
-    elapsed_ms = reconnect_wifi(config.wifi_ssid, config.wifi_password, config.wifi_country)
-    # a slow connection time will drain the battery faster and may
-    # indicate a poor quality connection
-    seconds_to_connect = elapsed_ms / 1000
-    if seconds_to_connect > 5:
-      logging.warn("  - took", seconds_to_connect, "seconds to connect to wifi")
-    return True
-  except Exception as x:
-    logging.error(f"! {x}")
-    return False
 
 # log the error, blink the warning led, and go back to sleep
 def halt(message):
@@ -343,7 +176,7 @@ def is_clock_set():
 
 # connect to wifi and attempt to fetch the current time from an ntp server
 def sync_clock_from_ntp():
-  if not connect_to_wifi():
+  if not networking.try_connect():
     return False
   return clocks.timesync_online()
 
@@ -470,7 +303,8 @@ def is_upload_needed():
 
 # upload cached readings to the configured destination
 def upload_readings():
-  if not connect_to_wifi():
+  # TODO if didn't NTP sync already, opportunistically do it while connected
+  if not networking.try_connect():
     logging.error(f"  - cannot upload readings, wifi connection failed")
     return False
 
@@ -560,7 +394,7 @@ def upload_readings():
 
     # Disconnect wifi
     logging.info("> Disconnecting wireless after upload")
-    disconnect_wifi()
+    networking.try_disconnect()
 
   return True
 
@@ -638,13 +472,7 @@ def sleep(time_override=None):
 
   # Disconnect the wifi, if it was, else some routers get upset at us vanishing
   # then trying to connect anew a while later.
-  if disconnect_wifi is not None:
-    logging.info("  - attempting to disconnect wifi first")
-    try:
-      disconnect_wifi()
-    except Exception as e:
-      # We *must not* let any wifi nonsense stop us sleeping.
-      logging.error(f"  - wifi disconnect error: {e}")
+  networking.try_disconnect()
 
   # disable the vsys hold, causing us to turn off
   logging.info("  - shutting down")
