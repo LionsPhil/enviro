@@ -34,6 +34,7 @@ class clocks:
 
     rtc_pico: RTC = None
     rtc_ext: PCF85063A = None
+    synchronized: bool = False
 
 
     def __init__(self, i2c: PimoroniI2C):
@@ -110,6 +111,7 @@ class clocks:
         t = time.gmtime(timestamp)
         self.write_pico(t)
         self.write_external(t)
+        self.synchronized = True
         # Save the last successful sync time.
         try:
             with open(SYNC_TIMESTAMP_FILE, "w") as syncfile:
@@ -137,6 +139,11 @@ class clocks:
         except (OSError, ValueError) as e:
             logging.warn("!  timesync file unreadable: {e}")
             return 0
+
+
+    def synchronized(self) -> bool:
+        """Return if the clock was synchronized online this run."""
+        return self.synchronized
 
 
     def force_online_sync_next(self) -> None:

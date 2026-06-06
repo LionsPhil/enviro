@@ -303,10 +303,16 @@ def is_upload_needed():
 
 # upload cached readings to the configured destination
 def upload_readings():
-  # TODO if didn't NTP sync already, opportunistically do it while connected
   if not networking.try_connect():
     logging.error(f"  - cannot upload readings, wifi connection failed")
     return False
+
+  if not clocks.synchronized():
+    # Opportunistic NTP sync, now the networking is up.
+    try:
+      clocks.timesync_online()
+    except Exception as e:
+      logging.error(f"  - opportunistic timesync failed: {e}")
 
   destination = config.destination
   try:
