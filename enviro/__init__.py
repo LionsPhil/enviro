@@ -95,12 +95,14 @@ if needs_provisioning:
 
 # all the other imports, so many shiny modules
 import machine, sys, os, ujson
-from enviro.custom_helpers import initialize_rtc, check_cached_file_is_not_empty, \
+from enviro.custom_helpers import check_cached_file_is_not_empty, \
   move_incompatible_file_out_of_uploads_dir, is_custom_config_active
 import phew
 from pcf85063a import PCF85063A
 import enviro.config_defaults as config_defaults
 import enviro.helpers as helpers
+import enviro.watchdog as watchdog
+import enviro.clocks
 
 config_defaults.add_missing_config_settings()
 
@@ -113,8 +115,14 @@ rtc_alarm_pin = Pin(RTC_ALARM_PIN, Pin.IN, Pin.PULL_DOWN)
 # BUG This should only be set up for Enviro Camera
 # external_trigger_pin = Pin(EXTERNAL_INTERRUPT_PIN, Pin.IN, Pin.PULL_DOWN)
 
-# intialise the pcf85063a real time clock chip
-rtc = initialize_rtc(i2c)
+# Arm the watchdog to power us down briefly before the fallback timer.
+watchdog.arm(enviro.clocks.FALLBACK_WAKEUP_MINUTES - 5)
+if not watchdog.clean():
+  logging.error("!  unclean shutdown last run, watchdog recovered!")
+watchdog.dirty()
+
+# Set up the clocks.
+clocks = enviro.clocks.clocks(i2c)
 
 # jazz up that console! toot toot!
 print(r"       ___            ___            ___          ___          ___            ___       ")
@@ -331,113 +339,22 @@ def low_disk_space():
 
 # returns True if the rtc clock has been set recently
 def is_clock_set():
-  # is the year on or before 2020?
-  if rtc.datetime()[0] <= 2020:
-    return False
-
-  if helpers.file_exists("sync_time.txt"):
-    now_str = helpers.datetime_string()
-    now = helpers.timestamp(now_str)
-
-    time_entries = []
-    with open("sync_time.txt", "r") as timefile:
-      time_entries = timefile.read().split("\n")
-
-    # read the first line from the time file
-    sync = now
-    for entry in time_entries:
-      if entry:
-        sync = helpers.timestamp(entry)
-        break
-
-    seconds_since_sync = now - sync
-    if seconds_since_sync >= 0:  # there's the rare chance of having a newer sync time than what the RTC reports
-      try:
-        if seconds_since_sync < (config.resync_frequency * 60 * 60):
-          return True
-
-        logging.info(f"  - rtc has not been synched for {config.resync_frequency} hour(s)")
-      except AttributeError:
-        return True
-
-  return False
-
-# phew's ntp client has no error reporting at all to log or inform retries.
-# (It would be better to make it raise, but then all callers need updating.)
-# As a side-effect, it sets the Pico's RTC on success by default; this version
-# always does.
-def native_ntp(ntp_host):
-  import machine, time, usocket, struct
-
-  timestamp = None
-  query = bytearray(48)
-  query[0] = 0x1b
-  logging.debug(f"  - ntp resolve {ntp_host}...")
-  address = usocket.getaddrinfo(ntp_host, 123)[0][-1]
-  socket = usocket.socket(usocket.AF_INET, usocket.SOCK_DGRAM)
-  socket.settimeout(10)
-  logging.debug(f"  - ntp send to {address}...")
-  socket.sendto(query, address)
-  logging.debug(f"  - ntp receive...")
-  data = socket.recv(48)
-  logging.debug(f"  - ntp received!")
-  socket.close()
-  local_epoch = 2208988800 # selected by Chris - blame him. :-D
-  timestamp = struct.unpack("!I", data[40:44])[0] - local_epoch
-  timestamp = time.gmtime(timestamp)
-
-  machine.RTC().datetime((
-    timestamp[0], timestamp[1], timestamp[2], timestamp[6],
-    timestamp[3], timestamp[4], timestamp[5], 0))
-
-  return timestamp
+  return clocks.timesync_offline()
 
 # connect to wifi and attempt to fetch the current time from an ntp server
 def sync_clock_from_ntp():
   if not connect_to_wifi():
     return False
-  attempt = 0
-  timestamp = None
-  while timestamp is None and attempt < 5:
-    attempt += 1
-    logging.info(f"  - attempt {attempt} to fetch time...")
-    try:
-      timestamp = native_ntp("pool.ntp.org")
-    except Exception as e:
-      logging.error(f"  - ntp failure: {e}")
-  if not timestamp:
-    logging.error("  - failed to fetch time from ntp server")
-    return False
-
-  rtc.datetime(timestamp) # set the time on the rtc chip
-
-  # read back the RTC time to confirm it was updated successfully
-  dt = rtc.datetime()
-  # rtc.datetime() misses the required day-of-year field; it won't match, but
-  # mktime() won't care since it doesn't contribute to epoch time.
-  diff = abs(time.mktime(timestamp) - time.mktime(dt + (0,)))
-  if diff > 1:
-    logging.error("  - failed to update rtc")
-    if helpers.file_exists("sync_time.txt"):
-      os.remove("sync_time.txt")
-    return False
-
-  logging.info("  - rtc synched")
-
-  # write out the sync time log
-  with open("sync_time.txt", "w") as syncfile:
-    syncfile.write("{0:04d}-{1:02d}-{2:02d}T{3:02d}:{4:02d}:{5:02d}Z".format(*timestamp))
-
-  return True
+  return clocks.timesync_online()
 
 # set the state of the warning led (off, on, blinking)
 def warn_led(state):
   if state == WARN_LED_OFF:
-    rtc.set_clock_output(PCF85063A.CLOCK_OUT_OFF)
+    clocks.rtc_ext.set_clock_output(PCF85063A.CLOCK_OUT_OFF)
   elif state == WARN_LED_ON:
-    rtc.set_clock_output(PCF85063A.CLOCK_OUT_1024HZ)
+    clocks.rtc_ext.set_clock_output(PCF85063A.CLOCK_OUT_1024HZ)
   elif state == WARN_LED_BLINK:
-    rtc.set_clock_output(PCF85063A.CLOCK_OUT_1HZ)
+    clocks.rtc_ext.set_clock_output(PCF85063A.CLOCK_OUT_1HZ)
 
 # the pcf85063a defaults to 32KHz clock output so need to explicitly turn off
 warn_led(WARN_LED_OFF)
@@ -590,8 +507,7 @@ def upload_readings():
             sleep(1)
           elif status == UPLOAD_LOST_SYNC:
             # remove the sync time file to trigger a resync on next boot
-            if helpers.file_exists("sync_time.txt"):
-              os.remove("sync_time.txt")
+            clocks.force_online_sync_next()
 
             # write out that we want to attempt a reupload
             with open("reattempt_upload.txt", "w") as attemptfile:
@@ -649,46 +565,6 @@ def upload_readings():
   return True
 
 
-# define DELAYOFF used to ensure enviro will power down even if it hangs
-# ----------------------------------------------------------------------
-# Ref: https://docs.micropython.org/en/latest/library/rp2.html#module-rp2
-from machine import Pin
-from rp2 import PIO, StateMachine, asm_pio
-
-@asm_pio(sideset_init=PIO.OUT_HIGH)
-def delayoff_prog():
-    label('d_loop')
-    jmp(y_dec, 'd_loop') [1]
-    label('done')
-    jmp('done').side(0)
-
-class DELAYOFF:
-    def __init__(self, pin, delay, sm_id=0):
-        delay_ms=int(delay * 60 * 1000)
-        self._sm = StateMachine(sm_id, delayoff_prog, freq=2000, sideset_base=Pin(pin))
-        self._sm.put(delay_ms)
-        self._sm.exec('pull()')
-        self._sm.exec("mov(y, osr)") #load max count into y
-        self._sm.active(1)
-        logging.debug(f'> delayoff set on gpio{pin:} for {delay_ms:} ms')
-
-def arm_watchdog(timeout):
-  # set default alarm now in case processor hangs.  Normally ths is overwritten by sleep()
-
-  if helpers.file_exists("watchdog_live.txt"):
-    os.remove("watchdog_live.txt")
-    logging.warn("> * * Processor recovered by watchdog * *")
-
-  # vs. the version in https://github.com/pimoroni/enviro/pull/144/, we leave
-  # the RTC alone, since this fork has already armed a fallback timer interrupt
-  # for it.
-
-  # power will be pulled based on wathdog time (set in config file in minutes)
-  delayoff = DELAYOFF(HOLD_VSYS_EN_PIN, int(timeout))
-  with open("watchdog_live.txt", "w") as hangfile:
-    hangfile.write("")
-
-
 def startup():
   import sys
 
@@ -706,15 +582,13 @@ def startup():
     continue_startup = board.startup(reason)
     # put the board back to sleep if the startup doesn't need to continue
     # and the RTC has not triggered since we were awoken
-    if not continue_startup and not rtc.read_timer_flag():
+    # XXX this is a weird condition
+    if not continue_startup and not clocks.rtc_ext.read_timer_flag():
       logging.debug("  - wake reason: trigger")
       sleep()
 
   # log the wake reason
   logging.info("  - wake reason:", wake_reason_name(reason))
-
-  if is_custom_config_active('watchdog_timeout'):
-    arm_watchdog(is_custom_config_active('watchdog_timeout'))
 
   # also immediately turn on the LED to indicate that we're doing something
   logging.debug("  - turn on activity led")
@@ -757,10 +631,10 @@ def sleep(time_override=None):
     logging.warn(f"  - limited to 255-minute maximum timer")
 
   # Set the timer.
-  rtc.unset_timer() # Per datasheet, disable timer while setting new duration.
-  rtc.clear_timer_flag()
-  rtc.set_timer(minutes, rtc.TIMER_TICK_1_OVER_60HZ)
-  rtc.enable_timer_interrupt(True)
+  clocks.set_timer(minutes)
+  # Re-arm the watchdog to a little less, if there's headroom.
+  if minutes > 2:
+    watchdog.arm(minutes - 2)
 
   # Disconnect the wifi, if it was, else some routers get upset at us vanishing
   # then trying to connect anew a while later.
@@ -772,12 +646,9 @@ def sleep(time_override=None):
       # We *must not* let any wifi nonsense stop us sleeping.
       logging.error(f"  - wifi disconnect error: {e}")
 
-  # delete watchdog file
-  if helpers.file_exists("watchdog_live.txt"):
-    os.remove("watchdog_live.txt")
-
   # disable the vsys hold, causing us to turn off
   logging.info("  - shutting down")
+  watchdog.cleanse()
   hold_vsys_en_pin.init(Pin.IN)
 
   # if we're still awake it means power is coming from the USB port in which
@@ -792,7 +663,7 @@ def sleep(time_override=None):
   # we'll wait here until the rtc timer triggers and then reset the board
   logging.debug("  - on usb power (so can't shutdown). Halt and wait for alarm or user reset instead")
   board = get_board()
-  while not rtc.read_timer_flag():
+  while not clocks.rtc_ext.read_timer_flag():
     if hasattr(board, "check_trigger"):
       board.check_trigger()
 
