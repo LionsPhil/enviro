@@ -1,5 +1,5 @@
 from enviro.constants import *
-import machine, math, os, time
+import machine, math, os, time, errno
 
 # miscellany
 # ===========================================================================
