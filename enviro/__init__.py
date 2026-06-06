@@ -648,6 +648,47 @@ def upload_readings():
 
   return True
 
+
+# define DELAYOFF used to ensure enviro will power down even if it hangs
+# ----------------------------------------------------------------------
+# Ref: https://docs.micropython.org/en/latest/library/rp2.html#module-rp2
+from machine import Pin
+from rp2 import PIO, StateMachine, asm_pio
+
+@asm_pio(sideset_init=PIO.OUT_HIGH)
+def delayoff_prog():
+    label('d_loop')
+    jmp(y_dec, 'd_loop') [1]
+    label('done')
+    jmp('done').side(0)
+
+class DELAYOFF:
+    def __init__(self, pin, delay, sm_id=0):
+        delay_ms=int(delay * 60 * 1000)
+        self._sm = StateMachine(sm_id, delayoff_prog, freq=2000, sideset_base=Pin(pin))
+        self._sm.put(delay_ms)
+        self._sm.exec('pull()')
+        self._sm.exec("mov(y, osr)") #load max count into y
+        self._sm.active(1)
+        logging.debug(f'> delayoff set on gpio{pin:} for {delay_ms:} ms')
+
+def arm_watchdog(timeout):
+  # set default alarm now in case processor hangs.  Normally ths is overwritten by sleep()
+
+  if helpers.file_exists("watchdog_live.txt"):
+    os.remove("watchdog_live.txt")
+    logging.warn("> * * Processor recovered by watchdog * *")
+
+  # vs. the version in https://github.com/pimoroni/enviro/pull/144/, we leave
+  # the RTC alone, since this fork has already armed a fallback timer interrupt
+  # for it.
+
+  # power will be pulled based on wathdog time (set in config file in minutes)
+  delayoff = DELAYOFF(HOLD_VSYS_EN_PIN, int(timeout))
+  with open("watchdog_live.txt", "w") as hangfile:
+    hangfile.write("")
+
+
 def startup():
   import sys
 
@@ -671,6 +712,9 @@ def startup():
 
   # log the wake reason
   logging.info("  - wake reason:", wake_reason_name(reason))
+
+  if is_custom_config_active('watchdog_timeout'):
+    arm_watchdog(is_custom_config_active('watchdog_timeout'))
 
   # also immediately turn on the LED to indicate that we're doing something
   logging.debug("  - turn on activity led")
@@ -727,6 +771,10 @@ def sleep(time_override=None):
     except Exception as e:
       # We *must not* let any wifi nonsense stop us sleeping.
       logging.error(f"  - wifi disconnect error: {e}")
+
+  # delete watchdog file
+  if helpers.file_exists("watchdog_live.txt"):
+    os.remove("watchdog_live.txt")
 
   # disable the vsys hold, causing us to turn off
   logging.info("  - shutting down")
