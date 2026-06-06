@@ -316,8 +316,7 @@ def upload_readings():
 
   destination = config.destination
   try:
-    exec(f"import enviro.destinations.{destination}")
-    destination_module = sys.modules[f"enviro.destinations.{destination}"]
+    destination_module = __import__(f"enviro.destinations.{destination}")
     destination_module.log_destination()
 
     for cache_file in os.ilistdir("uploads"):
