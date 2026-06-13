@@ -12,7 +12,7 @@ from phew import logging
 
 SYNC_TIMESTAMP_FILE = "lastsync.txt"
 SYNC_TOLERANCE_SECS = 24 * 60 * 60
-EARLIEST_REASONABLE_YEAR = 2020
+EARLIEST_REASONABLE_YEAR = 2022
 FALLBACK_WAKEUP_MINUTES = 30
 
 # Tread with caution.
@@ -86,7 +86,7 @@ class clocks:
         if ext_dt.tm_year > EARLIEST_REASONABLE_YEAR:
             logging.info("-  external RTC is set")
             if ext_timestamp - last_sync > SYNC_TOLERANCE_SECS:
-               logging.info("-  but it has still been too long sinc sync")
+               logging.info("-  but it has still been too long since sync")
                return False
             # Sync it across to the internal RTC.
             self.write_pico(ext_dt)
